@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "issuelens-backend"
+version = "0.1.0"
+description = "IssueLens: AI-Powered Issue & PR Triage Dashboard Backend (FastAPI + SQLAlchemy 2.x + Pydantic v2 + httpx + Google GenAI)"
+readme = "../README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy>=2.0.36",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "httpx>=0.28.0",
+    "python-dotenv>=1.0.1",
+    "google-genai>=2.25.0",
+]
+
+[tool.uvicorn]
+factory = false
+host = "0.0.0.0"
+port = 8000
+reload = true
