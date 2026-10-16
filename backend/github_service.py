@@ -47,7 +47,7 @@ def _build_github_headers(accept: str = "application/vnd.github+json") -> dict[s
         "X-GitHub-Api-Version": "2022-11-28",
     }
     token = os.getenv("GITHUB_TOKEN", "").strip()
-    if token and token != "your_github_token_here":
+    if token and token not in ("your_github_token_here", "your_personal_access_token_here"):
         headers["Authorization"] = f"Bearer {token}"
     return headers
 
@@ -305,7 +305,7 @@ async def post_issue_comment(
 ) -> dict[str, Any]:
     """Post a maintainer comment/reply directly to a GitHub issue or PR via the GitHub REST API."""
     token = os.getenv("GITHUB_TOKEN", "").strip()
-    if not token or token == "your_github_token_here":
+    if not token or token in ("your_github_token_here", "your_personal_access_token_here"):
         raise ValueError(
             "GITHUB_TOKEN is not configured. Set a valid GITHUB_TOKEN in your environment to post replies to GitHub."
         )
