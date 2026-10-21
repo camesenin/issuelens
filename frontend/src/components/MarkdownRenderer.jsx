@@ -8,7 +8,7 @@ function renderInline(text) {
       return (
         <code
           key={idx}
-          className="rounded bg-neutral-800/90 px-1.5 py-0.5 font-mono text-xs text-amber-300 border border-neutral-700/60"
+          className="rounded-md border border-zinc-800/80 bg-[#09090b] px-1.5 py-0.5 font-mono text-[11px] text-zinc-200"
         >
           {part.slice(1, -1)}
         </code>
@@ -16,7 +16,7 @@ function renderInline(text) {
     }
     if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
       return (
-        <strong key={idx} className="font-semibold text-neutral-100">
+        <strong key={idx} className="font-semibold text-zinc-100">
           {part.slice(2, -2)}
         </strong>
       )
@@ -29,7 +29,7 @@ function renderInline(text) {
           href={linkMatch[2]}
           target="_blank"
           rel="noreferrer"
-          className="text-sky-400 underline decoration-sky-500/40 underline-offset-2 hover:text-sky-300"
+          className="text-zinc-200 underline decoration-zinc-600 underline-offset-2 hover:text-white"
         >
           {linkMatch[1]}
         </a>
@@ -42,7 +42,7 @@ function renderInline(text) {
 export default function MarkdownRenderer({ content }) {
   if (!content || !content.trim()) {
     return (
-      <p className="italic text-neutral-500">
+      <p className="font-mono text-xs text-zinc-500">
         No markdown description provided for this item.
       </p>
     )
@@ -127,19 +127,19 @@ export default function MarkdownRenderer({ content }) {
   }
 
   return (
-    <div className="space-y-3 text-sm leading-relaxed text-neutral-300">
+    <div className="space-y-2.5 text-xs leading-relaxed text-zinc-300">
       {blocks.map((block, index) => {
         if (block.type === 'heading') {
           const sizeClass =
             block.level === 1
-              ? 'text-lg font-bold text-white border-b border-neutral-800 pb-1.5'
+              ? 'text-xs font-semibold uppercase tracking-wider text-zinc-200 border-b border-zinc-800/80 pb-1'
               : block.level === 2
-                ? 'text-base font-semibold text-neutral-100 pt-1'
-                : 'text-sm font-semibold text-neutral-200 pt-1'
+                ? 'text-xs font-semibold text-zinc-200 pt-1'
+                : 'text-xs font-medium text-zinc-300 pt-0.5'
           return (
-            <h3 key={index} className={sizeClass}>
+            <h4 key={index} className={sizeClass}>
               {renderInline(block.text)}
-            </h3>
+            </h4>
           )
         }
 
@@ -148,24 +148,25 @@ export default function MarkdownRenderer({ content }) {
           return (
             <div
               key={index}
-              className="overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950"
+              className="overflow-hidden rounded-md border border-zinc-800/80 bg-[#09090b]"
             >
               {block.lang && (
-                <div className="border-b border-neutral-800 bg-neutral-900/80 px-3 py-1 font-mono text-[11px] uppercase tracking-wider text-neutral-400">
-                  {block.lang}
+                <div className="flex items-center justify-between border-b border-zinc-800/80 bg-[#121215] px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                  <span>{block.lang}</span>
+                  {isDiff && <span className="text-zinc-600">patch</span>}
                 </div>
               )}
-              <pre className="overflow-x-auto p-3.5 font-mono text-xs leading-relaxed text-neutral-200">
+              <pre className="overflow-x-auto p-2.5 font-mono text-[11px] leading-relaxed text-zinc-300">
                 <code>
                   {isDiff
                     ? block.code.split('\n').map((line, lIdx) => {
-                        let lineClass = 'text-neutral-300'
+                        let lineClass = 'text-zinc-400'
                         if (line.startsWith('+') && !line.startsWith('+++')) {
-                          lineClass = 'bg-emerald-500/10 text-emerald-300'
+                          lineClass = 'bg-emerald-500/10 text-emerald-400'
                         } else if (line.startsWith('-') && !line.startsWith('---')) {
-                          lineClass = 'bg-rose-500/10 text-rose-300'
+                          lineClass = 'bg-rose-500/10 text-rose-400'
                         } else if (line.startsWith('@@') || line.startsWith('diff --git')) {
-                          lineClass = 'text-sky-400 font-semibold'
+                          lineClass = 'text-zinc-300 font-semibold'
                         }
                         return (
                           <div key={lIdx} className={`px-1 ${lineClass}`}>
@@ -185,9 +186,9 @@ export default function MarkdownRenderer({ content }) {
           return (
             <ListTag
               key={index}
-              className={`space-y-1.5 pl-5 ${
+              className={`space-y-1 pl-4 ${
                 block.ordered ? 'list-decimal' : 'list-disc'
-              } text-neutral-300`}
+              } text-zinc-300`}
             >
               {block.items.map((item, itemIdx) => (
                 <li key={itemIdx}>{renderInline(item)}</li>
@@ -200,7 +201,7 @@ export default function MarkdownRenderer({ content }) {
           return (
             <blockquote
               key={index}
-              className="border-l-2 border-neutral-700 bg-neutral-900/40 py-1.5 pl-3.5 italic text-neutral-400"
+              className="border-l-2 border-zinc-700 bg-[#121215] py-1 pl-3 text-zinc-400"
             >
               {renderInline(block.text)}
             </blockquote>
@@ -208,7 +209,7 @@ export default function MarkdownRenderer({ content }) {
         }
 
         return (
-          <p key={index} className="text-neutral-300">
+          <p key={index} className="text-zinc-300">
             {renderInline(block.text)}
           </p>
         )

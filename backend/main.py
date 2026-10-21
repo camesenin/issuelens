@@ -34,99 +34,146 @@ def _seed_demo_data_if_empty() -> None:
         if existing is not None:
             return
 
-        repo = Repository(owner="facebook", name="react")
-        db.add(repo)
+        repo_soroban = Repository(owner="stellar", name="stellar-soroban-env")
+        repo_fastapi = Repository(owner="fastapi", name="fastapi")
+        db.add_all([repo_soroban, repo_fastapi])
         db.flush()
 
         issue1 = Issue(
-            repo_id=repo.id,
-            github_issue_id=31842,
-            title="useEffect cleanup runs twice in production build when hydrating Suspense boundary",
+            repo_id=repo_soroban.id,
+            github_issue_id=1428,
+            title="HostError(Budget, ExceededLimit) during cross-contract Vec<Val> deep clone under Protocol 21",
             body=(
                 "## Summary\n\n"
-                "After upgrading our app to React 19, we noticed our WebSocket connection inside `useEffect` "
-                "disconnects and reconnects unexpectedly during SSR hydration.\n\n"
-                "It happens intermittently on pages using nested `<Suspense>` boundaries, "
-                "but I don't have a minimal reproduction repository or stack trace yet."
-            ),
-            author="dan-dev",
-            is_pr=False,
-            state="open",
-            bounty_xlm=75.0,
-            contributor_stellar_address="GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
-            bounty_status="escrowed",
-            stellar_tx_hash=None,
-        )
-        issue2 = Issue(
-            repo_id=repo.id,
-            github_issue_id=31850,
-            title="refactor(scheduler): remove legacy unstable_scheduleCallback priority parameter",
-            body=(
-                "## Summary\n\n"
-                "Removes the deprecated `options.timeout` signature from `unstable_scheduleCallback` "
-                "and updates the exported scheduler entrypoints.\n\n"
-                "### PR Diff\n"
-                "```diff\n"
-                "diff --git a/packages/scheduler/src/forks/Scheduler.js b/packages/scheduler/src/forks/Scheduler.js\n"
-                "--- a/packages/scheduler/src/forks/Scheduler.js\n"
-                "+++ b/packages/scheduler/src/forks/Scheduler.js\n"
-                "-export function unstable_scheduleCallback(priorityLevel, callback, options) {\n"
-                "+export function unstable_scheduleCallback(priorityLevel, callback) {\n"
-                "   var currentTime = getCurrentTime();\n"
-                "   var startTime = currentTime;\n"
-                " }\n"
+                "When invoking a cross-contract call via `Env::invoke_contract` that returns a nested `Vec<Val>` "
+                "containing >128 `BytesN<32>` elements, the host traps with `HostError(Budget, ExceededLimit)` "
+                "even though instruction metering shows <35% CPU budget consumption prior to return value marshaling.\n\n"
+                "## Observed Trace\n"
+                "```rust\n"
+                "HostError: Error(Budget, ExceededLimit)\n"
+                "  at soroban_env_host::budget::Budget::charge (budget.rs:412)\n"
+                "  at soroban_env_host::host::metered_clone::MeteredClone::metered_clone (metered_clone.rs:119)\n"
                 "```"
             ),
-            author="scheduler-contrib",
-            is_pr=True,
+            author="kaspar-v",
+            is_pr=False,
             state="open",
-            diff=(
-                "diff --git a/packages/scheduler/src/forks/Scheduler.js b/packages/scheduler/src/forks/Scheduler.js\n"
-                "--- a/packages/scheduler/src/forks/Scheduler.js\n"
-                "+++ b/packages/scheduler/src/forks/Scheduler.js\n"
-                "-export function unstable_scheduleCallback(priorityLevel, callback, options) {\n"
-                "+export function unstable_scheduleCallback(priorityLevel, callback) {\n"
-            ),
             bounty_xlm=150.0,
             contributor_stellar_address="GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
             bounty_status="escrowed",
             stellar_tx_hash=None,
         )
-        issue3 = Issue(
-            repo_id=repo.id,
-            github_issue_id=31859,
-            title="feat(devtools): highlight memoized server components in Profiler flamegraph",
+        issue2 = Issue(
+            repo_id=repo_soroban.id,
+            github_issue_id=1431,
+            title="feat(vm): enforce metered linear memory growth bounds in Vm::instantiate_from_wasm",
             body=(
                 "## Summary\n\n"
-                "Adds a subtle badge in the React DevTools Profiler flamegraph for Server Components "
-                "that were skipped during re-render.\n\n"
-                "### Steps to Verify\n"
-                "1. Open React DevTools Profiler\n"
-                "2. Record a transition\n"
-                "3. Inspect the `ServerComponent.test.tsx` suite\n\n"
-                "### PR Diff\n"
+                "Pre-charges initial Wasm linear memory pages before host module linking inside `Vm::instantiate_from_wasm` "
+                "and tightens the exported signature to require an explicit `ContractCostParams` reference.\n\n"
                 "```diff\n"
-                "diff --git a/packages/react-devtools-shared/src/__tests__/ServerComponent.test.tsx b/packages/react-devtools-shared/src/__tests__/ServerComponent.test.tsx\n"
-                "+++ b/packages/react-devtools-shared/src/__tests__/ServerComponent.test.tsx\n"
-                "+it('renders memoized server component badge in flamegraph', () => {\n"
-                "+  expect(true).toBe(true);\n"
-                "+});\n"
+                "diff --git a/soroban-env-host/src/vm.rs b/soroban-env-host/src/vm.rs\n"
+                "--- a/soroban-env-host/src/vm.rs\n"
+                "+++ b/soroban-env-host/src/vm.rs\n"
+                "-pub fn instantiate_from_wasm(host: &Host, wasm_bytes: &[u8]) -> Result<Rc<Vm>, HostError> {\n"
+                "+pub fn instantiate_from_wasm(host: &Host, wasm_bytes: &[u8], cost_params: &ContractCostParams) -> Result<Rc<Vm>, HostError> {\n"
+                "+    host.charge_budget(ContractCostType::VmMemAlloc, Some(wasm_bytes.len() as u64))?;\n"
+                "     let engine = Vm::new_engine(host.budget_ref())?;\n"
+                "     Vm::from_parsed_module(host, engine, wasm_bytes)\n"
+                " }\n"
                 "```"
             ),
-            author="devtools-maintainer",
+            author="graydon-s",
             is_pr=True,
             state="open",
             diff=(
-                "diff --git a/packages/react-devtools-shared/src/__tests__/ServerComponent.test.tsx b/packages/react-devtools-shared/src/__tests__/ServerComponent.test.tsx\n"
-                "+++ b/packages/react-devtools-shared/src/__tests__/ServerComponent.test.tsx\n"
+                "diff --git a/soroban-env-host/src/vm.rs b/soroban-env-host/src/vm.rs\n"
+                "--- a/soroban-env-host/src/vm.rs\n"
+                "+++ b/soroban-env-host/src/vm.rs\n"
+                "-pub fn instantiate_from_wasm(host: &Host, wasm_bytes: &[u8]) -> Result<Rc<Vm>, HostError> {\n"
+                "+pub fn instantiate_from_wasm(host: &Host, wasm_bytes: &[u8], cost_params: &ContractCostParams) -> Result<Rc<Vm>, HostError> {\n"
             ),
-            bounty_xlm=25.0,
-            contributor_stellar_address="GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+            bounty_xlm=200.0,
+            contributor_stellar_address="GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
             bounty_status="escrowed",
             stellar_tx_hash=None,
         )
+        issue3 = Issue(
+            repo_id=repo_soroban.id,
+            github_issue_id=1435,
+            title="fix(crypto): constant-time subgroup check in bls12_381_g1_msm host function",
+            body=(
+                "## Summary\n\n"
+                "Ensures every G1 affine point passed into `bls12_381_g1_msm` undergoes constant-time subgroup "
+                "membership verification prior to multi-scalar multiplication.\n\n"
+                "```diff\n"
+                "diff --git a/soroban-env-host/src/test/bls12_381.rs b/soroban-env-host/src/test/bls12_381.rs\n"
+                "+++ b/soroban-env-host/src/test/bls12_381.rs\n"
+                "+#[test]\n"
+                "+fn test_bls12_381_g1_msm_rejects_non_subgroup_points() -> Result<(), HostError> {\n"
+                "+    Ok(())\n"
+                "+}\n"
+                "```"
+            ),
+            author="sidharth-kr",
+            is_pr=True,
+            state="open",
+            diff=(
+                "diff --git a/soroban-env-host/src/test/bls12_381.rs b/soroban-env-host/src/test/bls12_381.rs\n"
+                "+++ b/soroban-env-host/src/test/bls12_381.rs\n"
+            ),
+            bounty_xlm=150.0,
+            contributor_stellar_address="GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGSNFHEYVXM3XOJMDS674JZ",
+            bounty_status="escrowed",
+            stellar_tx_hash=None,
+        )
+        issue4 = Issue(
+            repo_id=repo_fastapi.id,
+            github_issue_id=11402,
+            title="Annotated Depends() cache key collision when sub-dependency uses callable class instance",
+            body=(
+                "## Description\n\n"
+                "When two route parameters declare `Annotated[ServiceClient, Depends(RateLimitedClient(rpm=60))]` "
+                "and `Annotated[ServiceClient, Depends(RateLimitedClient(rpm=300))]`, FastAPI's request-scoped "
+                "dependency cache keys solely on `call.__class__` in certain async generator sub-trees."
+            ),
+            author="SebasDev",
+            is_pr=False,
+            state="open",
+            bounty_xlm=100.0,
+            contributor_stellar_address="GD5DJQDDBKGAYNEAXU562HYGOOSYAEOO6AS53PZXBOZGCP5M2OPGMZV3",
+            bounty_status="escrowed",
+            stellar_tx_hash=None,
+        )
+        issue5 = Issue(
+            repo_id=repo_soroban.id,
+            github_issue_id=1419,
+            title="perf(storage): batch footprint TTL extension ledger writes for persistent contract entries",
+            body=(
+                "## Summary\n\n"
+                "Coalesces consecutive `extend_contract_data_ttl` host ledger mutations within the same transaction "
+                "footprint into a single sorted batch write pass at host finalization.\n\n"
+                "```diff\n"
+                "diff --git a/soroban-env-host/src/test/storage_ttl_test.rs b/soroban-env-host/src/test/storage_ttl_test.rs\n"
+                "+++ b/soroban-env-host/src/test/storage_ttl_test.rs\n"
+                "+#[test]\n"
+                "+fn test_batched_ttl_extension_coalesces_duplicate_keys() {}\n"
+                "```"
+            ),
+            author="tomer-stellar",
+            is_pr=True,
+            state="open",
+            diff=(
+                "diff --git a/soroban-env-host/src/test/storage_ttl_test.rs b/soroban-env-host/src/test/storage_ttl_test.rs\n"
+                "+++ b/soroban-env-host/src/test/storage_ttl_test.rs\n"
+            ),
+            bounty_xlm=200.0,
+            contributor_stellar_address="GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+            bounty_status="paid",
+            stellar_tx_hash="8f4e2b9c71d04a6e3b58c19f20a4d7e6b3c8a1f09e2d4b7c6a5f8e1d2c3b4a59",
+        )
 
-        db.add_all([issue1, issue2, issue3])
+        db.add_all([issue1, issue2, issue3, issue4, issue5])
         db.flush()
 
         db.add_all(
@@ -135,56 +182,89 @@ def _seed_demo_data_if_empty() -> None:
                     issue_id=issue1.id,
                     needs_repro=True,
                     is_breaking=False,
-                    suggested_tags=["bug", "repro-needed"],
+                    suggested_tags=["needs-repro", "budget-metering", "protocol-21"],
                     ai_summary=(
-                        "Bug report regarding `useEffect` cleanup running twice during Suspense SSR hydration, "
-                        "but missing reproduction steps, minimal code snippet, and error logs."
+                        "Reports nonlinear memory/CPU charge amplification in `MeteredClone` when marshaling nested "
+                        "`Vec<Val>` across contract frames. Missing a minimal `.wasm` fixture or self-contained `Host` unit test."
                     ),
                     drafted_reply=(
-                        "Hi @dan-dev, thanks for reporting this! Because Suspense hydration timing depends heavily "
-                        "on your streaming setup, could you please share:\n"
-                        "1. A minimal CodeSandbox or GitHub reproduction repository\n"
-                        "2. The exact React & ReactDOM versions used\n"
-                        "3. Any hydration warnings or console logs\n\n"
-                        "Once we have a minimal repro, we'll gladly investigate!"
+                        "Thanks for the detailed stack trace @kaspar-v.\n\n"
+                        "To isolate whether `MeteredClone` is double-charging linear memory bytes on cross-contract return values, "
+                        "could you attach:\n"
+                        "1. A minimal `#[test]` harness using `Host::test_host_with_recording_footprint()`\n"
+                        "2. The exact `CostType` entry in `Budget` that trips `ExceededLimit`\n\n"
+                        "Once a minimal repro is attached, we will unlock the **150 XLM** bounty tier for a patch."
                     ),
                     complexity="Medium",
-                    bounty_xlm=75.0,
+                    bounty_xlm=150.0,
                 ),
                 TriageReport(
                     issue_id=issue2.id,
-                    needs_repro=True,
+                    needs_repro=False,
                     is_breaking=True,
-                    suggested_tags=["bug", "repro-needed"],
+                    suggested_tags=["missing-tests", "breaking-api", "soroban-vm"],
                     ai_summary=(
-                        "PR modifies the exported `unstable_scheduleCallback` function signature by removing the "
-                        "`options` parameter (potential breaking change) and does not include unit test updates in the diff."
+                        "Modifies public `Vm::instantiate_from_wasm` signature (breaking downstream embedders) and alters "
+                        "`VmMemAlloc` budget charging order without regression unit tests in `soroban-env-host/src/test/budget.rs`."
                     ),
                     drafted_reply=(
-                        "Thanks for the PR, @scheduler-contrib! Two quick items from our automated triage review:\n"
-                        "1. **Breaking Signature Change**: Removing `options` from `unstable_scheduleCallback` changes an "
-                        "exported function signature used by downstream packages.\n"
-                        "2. **Missing Unit Tests**: No test files (`*.test.js` / `*.test.tsx`) were modified in this diff. "
-                        "Could you add regression tests covering delayed scheduling?"
+                        "Thanks for the PR @graydon-s. Automated triage flagged two blockers before merge & bounty settlement:\n\n"
+                        "1. **Missing Unit Tests (`missing-tests`)**: Please add a test in `soroban-env-host/src/test/budget.rs`.\n"
+                        "2. **Public API Compatibility**: Keep `Vm::instantiate_from_wasm(host, wasm_bytes)` intact."
                     ),
                     complexity="High",
-                    bounty_xlm=150.0,
+                    bounty_xlm=200.0,
                 ),
                 TriageReport(
                     issue_id=issue3.id,
                     needs_repro=False,
                     is_breaking=False,
-                    suggested_tags=["enhancement", "good-first-issue"],
+                    suggested_tags=["ready", "crypto-bls12-381", "security-verified"],
                     ai_summary=(
-                        "Enhancement PR adding Profiler flamegraph badges for memoized Server Components. "
-                        "No breaking signature changes detected, and unit tests (`ServerComponent.test.tsx`) are included."
+                        "Clean, non-breaking cryptographic hardening patch for `bls12_381_g1_msm`. Includes negative subgroup "
+                        "test vectors in `test/bls12_381.rs` and preserves host interface stability."
                     ),
                     drafted_reply=(
-                        "Thanks @devtools-maintainer! The implementation looks clean, backward-compatible, and includes "
-                        "`ServerComponent.test.tsx` coverage. Queued for maintainer sign-off."
+                        "LGTM @sidharth-kr — subgroup verification placement prior to `G1Projective::msm_unchecked` is clean "
+                        "and the new negative test vectors in `test/bls12_381.rs` cover small-cofactor points.\n\n"
+                        "Approving for merge and releasing the **150 XLM** bounty via Stellar Horizon Testnet."
+                    ),
+                    complexity="Medium",
+                    bounty_xlm=150.0,
+                ),
+                TriageReport(
+                    issue_id=issue4.id,
+                    needs_repro=True,
+                    is_breaking=False,
+                    suggested_tags=["needs-repro", "missing-tests", "dependency-injection"],
+                    ai_summary=(
+                        "Describes a plausible cache key collision in `fastapi.dependencies.utils.get_flat_dependant`, "
+                        "but lacks a runnable `TestClient` reproduction script showing how `__hash__` is implemented."
+                    ),
+                    drafted_reply=(
+                        "Hi @SebasDev, thanks for the report.\n\n"
+                        "Could you share a self-contained 20-line snippet showing the definition of `RateLimitedClient` "
+                        "(specifically whether `__hash__` and `__eq__` are defined)?"
                     ),
                     complexity="Low",
-                    bounty_xlm=25.0,
+                    bounty_xlm=100.0,
+                ),
+                TriageReport(
+                    issue_id=issue5.id,
+                    needs_repro=False,
+                    is_breaking=False,
+                    suggested_tags=["ready", "storage-footprint", "perf"],
+                    ai_summary=(
+                        "High-impact storage footprint optimization with deterministic BTreeMap batch ordering and "
+                        "comprehensive regression tests in `storage_ttl_test.rs`. Verified and settled on Stellar Testnet."
+                    ),
+                    drafted_reply=(
+                        "Verified and merged @tomer-stellar!\n\n"
+                        "The `BTreeMap` key ordering guarantees deterministic footprint emission across validators. "
+                        "The **200 XLM** bounty has been settled on Stellar Testnet Horizon."
+                    ),
+                    complexity="High",
+                    bounty_xlm=200.0,
                 ),
             ]
         )
