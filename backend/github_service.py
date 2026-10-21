@@ -280,6 +280,9 @@ async def sync_repository_issues(
         )
         if existing_report is None:
             analysis = _fallback_analyze(issue)
+            issue.bounty_xlm = analysis.bounty_xlm
+            if issue.bounty_status not in ("escrowed", "paid"):
+                issue.bounty_status = "escrowed"
             db.add(
                 TriageReport(
                     issue_id=issue.id,
@@ -288,6 +291,8 @@ async def sync_repository_issues(
                     suggested_tags=analysis.suggested_tags,
                     ai_summary=analysis.ai_summary,
                     drafted_reply=analysis.drafted_reply,
+                    complexity=analysis.complexity,
+                    bounty_xlm=analysis.bounty_xlm,
                 )
             )
     db.commit()

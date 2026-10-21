@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  Activity,
   AlertOctagon,
   AlertTriangle,
+  Award,
   Check,
   CheckCircle2,
   CircleDot,
+  Coins,
   Copy,
+  ExternalLink,
   FileCode2,
   GitPullRequest,
   Loader2,
@@ -17,16 +21,49 @@ import {
   Tag,
   Terminal,
   User,
+  Wallet,
+  X,
 } from 'lucide-react'
 import MarkdownRenderer from './components/MarkdownRenderer.jsx'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+const DEFAULT_DEMO_STELLAR_ADDRESS =
+  'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H'
 
 function hasUnitTestsInIssue(issue) {
   const diffSource = `${issue?.diff || ''}\n${issue?.body || ''}`
   return /(?:test_[\w.-]+\.py|[\w.-]+_test\.py|[\w.-]+\.(?:test|spec)\.(?:tsx|ts|jsx|js)|\/__tests__\/|\/tests?\/)/i.test(
     diffSource
   )
+}
+
+function getRecommendedBountyXlm(issue) {
+  if (typeof issue?.bounty_xlm === 'number' && issue.bounty_xlm > 0) {
+    return issue.bounty_xlm
+  }
+  if (
+    typeof issue?.triage_report?.bounty_xlm === 'number' &&
+    issue.triage_report.bounty_xlm > 0
+  ) {
+    return issue.triage_report.bounty_xlm
+  }
+  if (issue?.triage_report?.is_breaking) return 150
+  if (issue?.triage_report?.suggested_tags?.includes('good-first-issue')) {
+    return 25
+  }
+  return 75
+}
+
+function getComplexityLabel(bountyXlm, report) {
+  if (report?.complexity) return report.complexity
+  if (bountyXlm >= 150) return 'High'
+  if (bountyXlm <= 25) return 'Low'
+  return 'Medium'
+}
+
+function truncateStellarAddress(addr) {
+  if (!addr || addr.length < 12) return addr || ''
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`
 }
 
 export default function App() {
@@ -41,6 +78,28 @@ export default function App() {
   const [draftedReply, setDraftedReply] = useState('')
   const [filterType, setFilterType] = useState('all') // 'all' | 'issue' | 'pr'
   const [banner, setBanner] = useState(null) // { type: 'error' | 'success', message: string }
+
+  // Stellar Network & Wallet State
+  const [networkStatus, setNetworkStatus] = useState({
+    status: 'online',
+    network: 'TESTNET',
+    horizon_url: 'https://horizon-testnet.stellar.org',
+    history_latest_ledger: 0,
+    current_protocol_version: 21,
+    demo_simulation_enabled: true,
+  })
+  const [walletAddress, setWalletAddress] = useState(null)
+  const [connectingWallet, setConnectingWallet] = useState(false)
+
+  // Release Stellar Bounty Modal / Drawer State
+  const [bountyModalOpen, setBountyModalOpen] = useState(false)
+  const [contributorAddressInput, setContributorAddressInput] = useState(
+    DEFAULT_DEMO_STELLAR_ADDRESS
+  )
+  const [bountyAmountInput, setBountyAmountInput] = useState(75)
+  const [payingBounty, setPayingBounty] = useState(false)
+  const [payoutReceipt, setPayoutReceipt] = useState(null)
+  const [payoutError, setPayoutError] = useState(null)
 
   const fetchIssues = async (selectFirst = false) => {
     setLoadingIssues(true)
@@ -64,8 +123,22 @@ export default function App() {
     }
   }
 
+  const fetchStellarNetworkStatus = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/stellar/network-status`)
+      if (!response.ok) return
+      const data = await response.json()
+      setNetworkStatus(data)
+    } catch {
+      // Keep last known Testnet status indicator if backend is temporarily unreachable
+    }
+  }
+
   useEffect(() => {
     fetchIssues(true)
+    fetchStellarNetworkStatus()
+    const intervalId = setInterval(fetchStellarNetworkStatus, 15000)
+    return () => clearInterval(intervalId)
   }, [])
 
   const filteredIssues = useMemo(() => {
@@ -88,10 +161,160 @@ export default function App() {
     if (selectedIssue) {
       setDraftedReply(selectedIssue.triage_report?.drafted_reply || '')
       setCopied(false)
+      setContributorAddressInput(
+        selectedIssue.contributor_stellar_address || DEFAULT_DEMO_STELLAR_ADDRESS
+      )
+      setBountyAmountInput(getRecommendedBountyXlm(selectedIssue))
+      setPayoutError(null)
+      if (selectedIssue.stellar_tx_hash) {
+        setPayoutReceipt({
+          issue_id: selectedIssue.id,
+          github_issue_id: selectedIssue.github_issue_id,
+          bounty_xlm: getRecommendedBountyXlm(selectedIssue),
+          contributor_stellar_address:
+            selectedIssue.contributor_stellar_address ||
+            DEFAULT_DEMO_STELLAR_ADDRESS,
+          bounty_status: selectedIssue.bounty_status || 'paid',
+          stellar_tx_hash: selectedIssue.stellar_tx_hash,
+          tx_hash: selectedIssue.stellar_tx_hash,
+          explorer_url: `https://stellar.expert/explorer/testnet/tx/${selectedIssue.stellar_tx_hash}`,
+          memo: `IssueLens-Bounty-#${selectedIssue.github_issue_id}`,
+          simulated: networkStatus.demo_simulation_enabled,
+        })
+      } else {
+        setPayoutReceipt(null)
+      }
     } else {
       setDraftedReply('')
+      setPayoutReceipt(null)
     }
   }, [selectedIssue?.id, selectedIssue?.triage_report?.drafted_reply])
+
+  const handleConnectStellarWallet = async () => {
+    if (walletAddress) {
+      setWalletAddress(null)
+      return
+    }
+    setConnectingWallet(true)
+    try {
+      if (
+        typeof window !== 'undefined' &&
+        window.freighterApi &&
+        typeof window.freighterApi.getPublicKey === 'function'
+      ) {
+        const pubKey = await window.freighterApi.getPublicKey()
+        if (pubKey) {
+          setWalletAddress(pubKey)
+          setBanner({
+            type: 'success',
+            message: `Connected Freighter Stellar Wallet: ${truncateStellarAddress(pubKey)}`,
+          })
+          return
+        }
+      }
+      // Fallback to IssueLens Testnet Escrow Demo Wallet if Freighter extension is not installed
+      setWalletAddress(DEFAULT_DEMO_STELLAR_ADDRESS)
+      setBanner({
+        type: 'success',
+        message: `Connected Stellar Testnet Escrow Wallet (${truncateStellarAddress(DEFAULT_DEMO_STELLAR_ADDRESS)})`,
+      })
+    } catch {
+      setWalletAddress(DEFAULT_DEMO_STELLAR_ADDRESS)
+    } finally {
+      setConnectingWallet(false)
+    }
+  }
+
+  const handleOpenBountyModal = (issueItem = selectedIssue) => {
+    const target = issueItem || selectedIssue
+    if (!target) return
+    if (target.id !== selectedId) {
+      setSelectedId(target.id)
+    }
+    setContributorAddressInput(
+      target.contributor_stellar_address || DEFAULT_DEMO_STELLAR_ADDRESS
+    )
+    setBountyAmountInput(getRecommendedBountyXlm(target))
+    setPayoutError(null)
+    if (target.stellar_tx_hash) {
+      setPayoutReceipt({
+        issue_id: target.id,
+        github_issue_id: target.github_issue_id,
+        bounty_xlm: getRecommendedBountyXlm(target),
+        contributor_stellar_address:
+          target.contributor_stellar_address || DEFAULT_DEMO_STELLAR_ADDRESS,
+        bounty_status: target.bounty_status || 'paid',
+        stellar_tx_hash: target.stellar_tx_hash,
+        tx_hash: target.stellar_tx_hash,
+        explorer_url: `https://stellar.expert/explorer/testnet/tx/${target.stellar_tx_hash}`,
+        memo: `IssueLens-Bounty-#${target.github_issue_id}`,
+        simulated: networkStatus.demo_simulation_enabled,
+      })
+    } else {
+      setPayoutReceipt(null)
+    }
+    setBountyModalOpen(true)
+  }
+
+  const handlePayViaStellarHorizon = async (e) => {
+    if (e) e.preventDefault()
+    if (!selectedIssue) return
+
+    const trimmedAddress = contributorAddressInput.trim()
+    if (!trimmedAddress.startsWith('G') || trimmedAddress.length !== 56) {
+      setPayoutError(
+        'Please enter a valid 56-character Stellar public key starting with "G...".'
+      )
+      return
+    }
+
+    setPayingBounty(true)
+    setPayoutError(null)
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/issues/${selectedIssue.id}/bounty/payout`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contributor_stellar_address: trimmedAddress,
+            bounty_xlm: Number(bountyAmountInput) || getRecommendedBountyXlm(selectedIssue),
+          }),
+        }
+      )
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}))
+        throw new Error(
+          errData.detail || `Stellar payout failed (HTTP ${response.status})`
+        )
+      }
+      const data = await response.json()
+      setPayoutReceipt(data)
+      setIssues((prev) =>
+        prev.map((item) =>
+          item.id === selectedIssue.id
+            ? {
+                ...item,
+                bounty_xlm: data.bounty_xlm,
+                contributor_stellar_address: data.contributor_stellar_address,
+                bounty_status: data.bounty_status,
+                stellar_tx_hash: data.stellar_tx_hash,
+              }
+            : item
+        )
+      )
+      setBanner({
+        type: 'success',
+        message: `Paid ${data.bounty_xlm} XLM bounty for #${data.github_issue_id} on Stellar Testnet (tx: ${data.stellar_tx_hash.slice(0, 10)}...).`,
+      })
+    } catch (err) {
+      setPayoutError(
+        err.message || 'Unable to submit Stellar Horizon bounty transaction.'
+      )
+    } finally {
+      setPayingBounty(false)
+    }
+  }
 
   const handleScanRepository = async (e) => {
     e.preventDefault()
@@ -144,13 +367,22 @@ export default function App() {
       const report = await response.json()
       setIssues((prev) =>
         prev.map((item) =>
-          item.id === issueId ? { ...item, triage_report: report } : item
+          item.id === issueId
+            ? {
+                ...item,
+                bounty_xlm: report.bounty_xlm ?? item.bounty_xlm,
+                triage_report: report,
+              }
+            : item
         )
       )
       setDraftedReply(report.drafted_reply || '')
+      if (report.bounty_xlm) {
+        setBountyAmountInput(report.bounty_xlm)
+      }
       setBanner({
         type: 'success',
-        message: `AI Triage completed for #${selectedIssue?.github_issue_id || issueId}.`,
+        message: `AI Triage completed for #${selectedIssue?.github_issue_id || issueId} — Recommended Bounty: ${report.bounty_xlm || 75} XLM.`,
       })
     } catch (err) {
       setBanner({
@@ -212,61 +444,107 @@ export default function App() {
 
   const report = selectedIssue?.triage_report
   const prHasTests = selectedIssue?.is_pr ? hasUnitTestsInIssue(selectedIssue) : false
+  const selectedBountyXlm = selectedIssue ? getRecommendedBountyXlm(selectedIssue) : 75
+  const selectedComplexity = selectedIssue
+    ? getComplexityLabel(selectedBountyXlm, report)
+    : 'Medium'
 
   return (
     <div className="flex min-h-screen flex-col bg-neutral-950 text-neutral-100 selection:bg-indigo-500/30 selection:text-indigo-200">
-      {/* 1. Header Bar */}
+      {/* 1. Header Bar with Stellar Testnet Live Badge & Freighter Wallet Button */}
       <header className="sticky top-0 z-20 border-b border-neutral-800/90 bg-neutral-950/90 backdrop-blur-md">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4 px-6 py-3.5">
-          {/* Brand Title & Clean Badge */}
-          <div className="flex items-center gap-3">
+          {/* Brand Title & Ecosystem Badges */}
+          <div className="flex flex-wrap items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-900 text-indigo-400 shadow-inner">
               <Sparkles className="h-4 w-4" />
             </div>
-            <div className="flex items-center gap-2.5">
+            <div className="flex flex-wrap items-center gap-2.5">
               <h1 className="text-lg font-bold tracking-tight text-white">
                 IssueLens
               </h1>
               <span className="inline-flex items-center gap-1 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2.5 py-0.5 text-[11px] font-medium tracking-wide text-indigo-300">
-                AI Triage
+                AI Triage &amp; Drips
               </span>
+
+              {/* Live Stellar Testnet Horizon Ledger Badge */}
+              <div
+                title={`Horizon: ${networkStatus.horizon_url || 'https://horizon-testnet.stellar.org'}`}
+                className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-300"
+              >
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+                </span>
+                <span>Stellar Testnet Connected</span>
+                {networkStatus.history_latest_ledger > 0 && (
+                  <span className="hidden rounded bg-emerald-950/80 px-1.5 py-0.5 font-mono text-[10px] text-emerald-200 sm:inline">
+                    Ledger #{networkStatus.history_latest_ledger}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Repo Scanner Input & Button */}
-          <form
-            onSubmit={handleScanRepository}
-            className="flex w-full max-w-lg items-center gap-2.5 sm:w-auto"
-          >
-            <div className="relative flex-1 sm:w-72">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
-              <input
-                type="text"
-                value={repoInput}
-                onChange={(e) => setRepoInput(e.target.value)}
-                placeholder="owner/repo (e.g. facebook/react)"
-                aria-label="GitHub repository owner/repo"
-                className="w-full rounded-lg border border-neutral-800 bg-neutral-900 py-2 pl-9 pr-3 text-sm text-neutral-100 placeholder-neutral-500 transition focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={scanning}
-              className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+          {/* Right Controls: Repo Scanner + Connect Freighter / Stellar Wallet */}
+          <div className="flex flex-wrap items-center gap-3">
+            <form
+              onSubmit={handleScanRepository}
+              className="flex w-full max-w-md items-center gap-2 sm:w-auto"
             >
-              {scanning ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>Scanning...</span>
-                </>
+              <div className="relative flex-1 sm:w-64">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
+                <input
+                  type="text"
+                  value={repoInput}
+                  onChange={(e) => setRepoInput(e.target.value)}
+                  placeholder="owner/repo (e.g. facebook/react)"
+                  aria-label="GitHub repository owner/repo"
+                  className="w-full rounded-lg border border-neutral-800 bg-neutral-900 py-2 pl-9 pr-3 text-sm text-neutral-100 placeholder-neutral-500 transition focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={scanning}
+                className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {scanning ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Scanning...</span>
+                  </>
+                ) : (
+                  <>
+                    <Terminal className="h-4 w-4" />
+                    <span>Scan Repo</span>
+                  </>
+                )}
+              </button>
+            </form>
+
+            {/* Connect Freighter / Stellar Wallet Button */}
+            <button
+              type="button"
+              onClick={handleConnectStellarWallet}
+              disabled={connectingWallet}
+              className={`inline-flex items-center gap-2 rounded-lg border px-3.5 py-2 text-xs font-semibold transition ${
+                walletAddress
+                  ? 'border-sky-500/40 bg-sky-500/15 text-sky-200 hover:bg-sky-500/25'
+                  : 'border-purple-500/40 bg-purple-500/15 text-purple-200 hover:bg-purple-500/25'
+              }`}
+            >
+              <Wallet className="h-3.5 w-3.5 text-purple-300" />
+              {connectingWallet ? (
+                <span>Connecting...</span>
+              ) : walletAddress ? (
+                <span className="font-mono">
+                  Wallet: {truncateStellarAddress(walletAddress)}
+                </span>
               ) : (
-                <>
-                  <Terminal className="h-4 w-4" />
-                  <span>Scan Repository</span>
-                </>
+                <span>Connect Freighter / Stellar Wallet</span>
               )}
             </button>
-          </form>
+          </div>
         </div>
 
         {/* Status Banner */}
@@ -302,11 +580,11 @@ export default function App() {
       {/* 2. Split View Layout */}
       <div className="mx-auto flex w-full max-w-[1600px] flex-1 flex-col lg:flex-row">
         {/* Left Sidebar: Synced Issues & PRs */}
-        <aside className="flex w-full flex-col border-b border-neutral-800 bg-neutral-950 lg:w-[400px] lg:shrink-0 lg:border-b-0 lg:border-r">
+        <aside className="flex w-full flex-col border-b border-neutral-800 bg-neutral-950 lg:w-[420px] lg:shrink-0 lg:border-b-0 lg:border-r">
           <div className="flex items-center justify-between border-b border-neutral-800/80 px-4 py-3">
             <div className="flex items-center gap-2">
               <span className="text-xs font-semibold uppercase tracking-wider text-neutral-400">
-                Triage Queue
+                Triage &amp; Bounty Queue
               </span>
               <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-xs font-medium text-neutral-300">
                 {filteredIssues.length}
@@ -344,13 +622,15 @@ export default function App() {
             ) : filteredIssues.length === 0 ? (
               <div className="p-8 text-center text-sm text-neutral-500">
                 No issues or PRs in queue. Enter a repository above and click{' '}
-                <span className="font-medium text-neutral-300">Scan Repository</span>.
+                <span className="font-medium text-neutral-300">Scan Repo</span>.
               </div>
             ) : (
               filteredIssues.map((item) => {
                 const isSelected = selectedIssue?.id === item.id
                 const needsRepro = Boolean(item.triage_report?.needs_repro)
                 const isBreaking = Boolean(item.triage_report?.is_breaking)
+                const itemBountyXlm = getRecommendedBountyXlm(item)
+                const isPaid = item.bounty_status === 'paid' || Boolean(item.stellar_tx_hash)
 
                 return (
                   <button
@@ -381,8 +661,20 @@ export default function App() {
                       {item.title}
                     </h2>
 
-                    {/* Warning & Alert Badges */}
+                    {/* Triage Status + AI Recommended Stellar XLM Bounty Badges */}
                     <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                      <span className="inline-flex items-center gap-1 rounded-md border border-sky-500/35 bg-sky-500/10 px-2 py-0.5 text-[11px] font-semibold text-sky-300">
+                        <Coins className="h-3 w-3 text-sky-400" />
+                        AI Recommended Bounty: {itemBountyXlm} XLM
+                      </span>
+
+                      {isPaid && (
+                        <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-300">
+                          <CheckCircle2 className="h-3 w-3" />
+                          Bounty Paid
+                        </span>
+                      )}
+
                       {needsRepro && (
                         <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-300">
                           <AlertTriangle className="h-3 w-3" />
@@ -420,7 +712,7 @@ export default function App() {
                 No Issue or Pull Request Selected
               </h2>
               <p className="mt-1 max-w-md text-xs text-neutral-500">
-                Select an item from the left sidebar or scan a GitHub repository to inspect markdown descriptions, AI triage insights, and maintainer replies.
+                Select an item from the left sidebar or scan a GitHub repository to inspect markdown descriptions, AI triage insights, and Stellar XLM bounties.
               </p>
             </div>
           ) : (
@@ -463,26 +755,99 @@ export default function App() {
                     </h2>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => handleRunTriage(selectedIssue.id)}
-                    disabled={triagingId === selectedIssue.id}
-                    className="inline-flex items-center gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/15 px-3.5 py-1.5 text-xs font-semibold text-indigo-300 transition hover:bg-indigo-500/25 disabled:opacity-50"
-                  >
-                    {triagingId === selectedIssue.id ? (
-                      <>
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        Analyzing with Gemini...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="h-3.5 w-3.5" />
-                        Re-run AI Triage
-                      </>
-                    )}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => handleRunTriage(selectedIssue.id)}
+                      disabled={triagingId === selectedIssue.id}
+                      className="inline-flex items-center gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/15 px-3.5 py-1.5 text-xs font-semibold text-indigo-300 transition hover:bg-indigo-500/25 disabled:opacity-50"
+                    >
+                      {triagingId === selectedIssue.id ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Analyzing with Gemini...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-3.5 w-3.5" />
+                          Re-run AI Triage
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleOpenBountyModal(selectedIssue)}
+                      className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-sky-600 to-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:from-sky-500 hover:to-indigo-500"
+                    >
+                      <Award className="h-3.5 w-3.5" />
+                      Release Stellar Bounty ({selectedBountyXlm} XLM)
+                    </button>
+                  </div>
                 </div>
               </div>
+
+              {/* Stellar XLM Bounty & Drips Status Banner on Issue */}
+              <section className="rounded-xl border border-sky-500/30 bg-gradient-to-r from-sky-950/40 via-neutral-900/80 to-indigo-950/40 p-4 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/10 text-sky-300">
+                      <Coins className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-bold text-white">
+                          AI Recommended Bounty: {selectedBountyXlm} XLM
+                        </span>
+                        <span className="rounded-md border border-sky-500/30 bg-sky-500/15 px-2 py-0.5 text-[11px] font-semibold text-sky-200">
+                          {selectedComplexity} Complexity
+                        </span>
+                        <span
+                          className={`rounded-md border px-2 py-0.5 font-mono text-[11px] font-semibold uppercase ${
+                            selectedIssue.bounty_status === 'paid'
+                              ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                              : 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                          }`}
+                        >
+                          {selectedIssue.bounty_status || 'escrowed'}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-xs text-neutral-400">
+                        On-chain Memo:{' '}
+                        <code className="rounded bg-neutral-900 px-1.5 py-0.5 font-mono text-sky-300">
+                          IssueLens-Bounty-#{selectedIssue.github_issue_id}
+                        </code>
+                        {selectedIssue.stellar_tx_hash && (
+                          <>
+                            {' '}
+                            • Tx:{' '}
+                            <a
+                              href={`https://stellar.expert/explorer/testnet/tx/${selectedIssue.stellar_tx_hash}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 font-mono text-emerald-300 underline decoration-emerald-500/50 underline-offset-2 hover:text-emerald-200"
+                            >
+                              {selectedIssue.stellar_tx_hash.slice(0, 12)}...
+                              <ExternalLink className="h-3 w-3" />
+                            </a>
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleOpenBountyModal(selectedIssue)}
+                    className="inline-flex items-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/15 px-3.5 py-2 text-xs font-semibold text-sky-200 transition hover:bg-sky-500/25"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    {selectedIssue.bounty_status === 'paid'
+                      ? 'View Stellar Receipt / Re-pay'
+                      : 'Release Stellar Bounty'}
+                  </button>
+                </div>
+              </section>
 
               {/* AI Triage Insights Box */}
               <section className="rounded-xl border border-indigo-500/25 bg-neutral-900/70 p-5 shadow-sm">
@@ -494,9 +859,13 @@ export default function App() {
                     </h3>
                   </div>
 
-                  {/* Suggested Tags */}
+                  {/* Suggested Tags + AI Recommended Bounty Badge */}
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Tag className="mr-1 h-3.5 w-3.5 text-neutral-500" />
+                    <span className="inline-flex items-center gap-1 rounded-md border border-sky-500/35 bg-sky-500/15 px-2.5 py-0.5 font-mono text-xs font-semibold text-sky-200">
+                      <Coins className="h-3 w-3 text-sky-400" />
+                      AI Recommended Bounty: {selectedBountyXlm} XLM
+                    </span>
+                    <Tag className="ml-1 mr-0.5 h-3.5 w-3.5 text-neutral-500" />
                     {(report?.suggested_tags?.length
                       ? report.suggested_tags
                       : ['bug', 'repro-needed']
@@ -700,6 +1069,188 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {/* 3. Release Stellar Bounty Modal / Drawer */}
+      {bountyModalOpen && selectedIssue && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="release-stellar-bounty-title"
+        >
+          <div className="w-full max-w-lg rounded-2xl border border-neutral-800 bg-neutral-900 p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-neutral-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-sky-500/30 bg-sky-500/15 text-sky-300">
+                  <Award className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2
+                    id="release-stellar-bounty-title"
+                    className="text-base font-bold text-white"
+                  >
+                    Release Stellar Bounty
+                  </h2>
+                  <p className="text-xs text-neutral-400">
+                    Issue #{selectedIssue.github_issue_id} • Stellar Testnet Horizon
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBountyModalOpen(false)}
+                className="rounded-lg p-1 text-neutral-400 transition hover:bg-neutral-800 hover:text-white"
+                aria-label="Close modal"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handlePayViaStellarHorizon} className="mt-5 space-y-4">
+              {/* Complexity & Recommended Bounty Summary */}
+              <div className="flex items-center justify-between rounded-xl border border-neutral-800 bg-neutral-950/80 p-3.5 text-xs">
+                <div>
+                  <span className="text-neutral-400">AI Complexity Tier:</span>{' '}
+                  <span className="font-semibold text-white">
+                    {selectedComplexity} ({selectedBountyXlm} XLM)
+                  </span>
+                </div>
+                <span className="rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 font-mono text-sky-300">
+                  Memo: IssueLens-Bounty-#{selectedIssue.github_issue_id}
+                </span>
+              </div>
+
+              {/* Contributor Stellar Public Key Input */}
+              <div>
+                <label
+                  htmlFor="contributor-stellar-address"
+                  className="block text-xs font-semibold uppercase tracking-wider text-neutral-300"
+                >
+                  Contributor Stellar Public Key (G...)
+                </label>
+                <input
+                  id="contributor-stellar-address"
+                  type="text"
+                  value={contributorAddressInput}
+                  onChange={(e) => setContributorAddressInput(e.target.value)}
+                  placeholder="G..."
+                  required
+                  className="mt-1.5 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3.5 py-2.5 font-mono text-xs text-neutral-100 placeholder-neutral-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                />
+                <p className="mt-1 text-[11px] text-neutral-500">
+                  Enter the contributor&apos;s 56-character Stellar Ed25519 public key (`G...`).
+                </p>
+              </div>
+
+              {/* Bounty Amount (XLM) */}
+              <div>
+                <label
+                  htmlFor="stellar-bounty-amount"
+                  className="block text-xs font-semibold uppercase tracking-wider text-neutral-300"
+                >
+                  Bounty Amount (XLM)
+                </label>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <input
+                    id="stellar-bounty-amount"
+                    type="number"
+                    step="1"
+                    min="1"
+                    value={bountyAmountInput}
+                    onChange={(e) => setBountyAmountInput(e.target.value)}
+                    className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3.5 py-2 font-mono text-sm text-neutral-100 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                  />
+                  {[
+                    { label: 'Low (25)', value: 25 },
+                    { label: 'Med (75)', value: 75 },
+                    { label: 'High (150)', value: 150 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.value}
+                      type="button"
+                      onClick={() => setBountyAmountInput(preset.value)}
+                      className="shrink-0 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-xs font-medium text-neutral-300 hover:border-sky-500/40 hover:text-white"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {payoutError && (
+                <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+                  {payoutError}
+                </div>
+              )}
+
+              {/* Live Transaction Hash & Stellar Expert Link */}
+              {payoutReceipt && (
+                <div className="rounded-xl border border-emerald-500/35 bg-emerald-950/25 p-4 text-xs space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-300">
+                      <CheckCircle2 className="h-4 w-4" />
+                      Stellar XLM Bounty Settled ({payoutReceipt.bounty_xlm} XLM)
+                    </span>
+                    <span className="rounded bg-emerald-500/20 px-2 py-0.5 font-mono text-[10px] uppercase text-emerald-200">
+                      {payoutReceipt.simulated ? 'Testnet Simulation' : 'Live Testnet'}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1 font-mono text-[11px] text-neutral-300">
+                    <div className="break-all">
+                      <span className="text-neutral-500">Tx Hash:</span>{' '}
+                      {payoutReceipt.stellar_tx_hash}
+                    </div>
+                    <div>
+                      <span className="text-neutral-500">Memo:</span>{' '}
+                      {payoutReceipt.memo}
+                    </div>
+                  </div>
+
+                  <div className="pt-1">
+                    <a
+                      href={`https://stellar.expert/explorer/testnet/tx/${payoutReceipt.stellar_tx_hash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 font-semibold text-emerald-200 transition hover:bg-emerald-500/25"
+                    >
+                      <span>View on Stellar Expert Explorer</span>
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setBountyModalOpen(false)}
+                  className="rounded-lg border border-neutral-700 bg-neutral-800 px-4 py-2 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
+                >
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  disabled={payingBounty}
+                  className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-sky-600 to-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-md transition hover:from-sky-500 hover:to-indigo-500 disabled:opacity-50"
+                >
+                  {payingBounty ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span>Submitting to Horizon...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Activity className="h-3.5 w-3.5" />
+                      <span>Pay via Stellar Horizon</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

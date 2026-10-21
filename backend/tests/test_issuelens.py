@@ -293,3 +293,65 @@ def test_get_api_issues_returns_issues_with_triage_reports(client, db_session):
     assert validated_issue.triage_report.needs_repro is True
     assert validated_issue.triage_report.suggested_tags == ["bug", "repro-needed"]
     assert validated_issue.triage_report.ai_summary == "Missing reproduction repository and hydration error log."
+
+
+# ---------------------------------------------------------------------------
+# 4. Stellar XLM Bounty & Testnet Horizon Integration Tests
+# ---------------------------------------------------------------------------
+
+
+def test_complexity_bounty_xlm_auto_calculation():
+    from models import calculate_bounty_xlm
+
+    assert calculate_bounty_xlm("Low") == ("Low", 25.0)
+    assert calculate_bounty_xlm("Medium") == ("Medium", 75.0)
+    assert calculate_bounty_xlm("High") == ("High", 150.0)
+    assert calculate_bounty_xlm(is_breaking=True) == ("High", 150.0)
+    assert calculate_bounty_xlm(suggested_tags=["good-first-issue"]) == ("Low", 25.0)
+
+
+def test_stellar_bounty_payout_and_network_status_endpoints(client, db_session):
+    """Verify POST /api/issues/{issue_id}/bounty/payout and GET /api/stellar/network-status."""
+    repo = Repository(owner="stellar", name="py-stellar-base")
+    db_session.add(repo)
+    db_session.flush()
+
+    issue = Issue(
+        repo_id=repo.id,
+        github_issue_id=1088,
+        title="Add Soroban transaction footprint helper",
+        body="Enhancement adding footprint helper for Soroban smart contracts.",
+        author="stellar-dev",
+        is_pr=True,
+        state="open",
+        bounty_xlm=75.0,
+        contributor_stellar_address="GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+        bounty_status="escrowed",
+    )
+    db_session.add(issue)
+    db_session.commit()
+
+    payout_resp = client.post(
+        f"/api/issues/{issue.id}/bounty/payout",
+        json={
+            "contributor_stellar_address": "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+        },
+    )
+    assert payout_resp.status_code == 200
+    payout_data = payout_resp.json()
+    assert payout_data["issue_id"] == issue.id
+    assert payout_data["github_issue_id"] == 1088
+    assert payout_data["bounty_xlm"] == 75.0
+    assert payout_data["bounty_status"] == "paid"
+    assert payout_data["memo"] == "IssueLens-Bounty-#1088"
+    assert len(payout_data["stellar_tx_hash"]) == 64
+    assert payout_data["explorer_url"].startswith(
+        "https://stellar.expert/explorer/testnet/tx/"
+    )
+
+    net_resp = client.get("/api/stellar/network-status")
+    assert net_resp.status_code == 200
+    net_data = net_resp.json()
+    assert net_data["network"] == "TESTNET"
+    assert net_data["horizon_url"] == "https://horizon-testnet.stellar.org"
+

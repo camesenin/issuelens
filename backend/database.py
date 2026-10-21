@@ -1,11 +1,11 @@
 import os
 from collections.abc import Generator
-from datetime import datetime, timezone
-from typing import Any
 
 from dotenv import load_dotenv
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, create_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.orm import Session, sessionmaker
+
+from models import Base, Issue, Repository, TriageReport, calculate_bounty_xlm, utc_now
 
 load_dotenv()
 
@@ -27,87 +27,34 @@ SessionLocal = sessionmaker(
 )
 
 
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-class Base(DeclarativeBase):
-    """SQLAlchemy 2.x Declarative Base."""
-    pass
-
-
-class Repository(Base):
-    """Tracked GitHub repository."""
-
-    __tablename__ = "repositories"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    owner: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    scanned_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), default=utc_now, nullable=True
-    )
-
-    issues: Mapped[list["Issue"]] = relationship(
-        "Issue",
-        back_populates="repository",
-        cascade="all, delete-orphan",
-    )
-
-
-class Issue(Base):
-    """GitHub Issue or Pull Request belonging to a Repository."""
-
-    __tablename__ = "issues"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    repo_id: Mapped[int] = mapped_column(
-        ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    github_issue_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    title: Mapped[str] = mapped_column(String(500), nullable=False)
-    body: Mapped[str | None] = mapped_column(Text, nullable=True)
-    author: Mapped[str] = mapped_column(String(255), nullable=False)
-    is_pr: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    state: Mapped[str] = mapped_column(String(50), default="open", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, nullable=False
-    )
-
-    # Supplemental fields storing raw PR diff and issue comments from GitHub sync
-    diff: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
-    comments: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True, default=list)
-
-    repository: Mapped["Repository"] = relationship("Repository", back_populates="issues")
-    triage_report: Mapped["TriageReport | None"] = relationship(
-        "TriageReport",
-        back_populates="issue",
-        uselist=False,
-        cascade="all, delete-orphan",
-    )
-
-
-class TriageReport(Base):
-    """AI-generated triage report associated with an Issue or PR."""
-
-    __tablename__ = "triage_reports"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    issue_id: Mapped[int] = mapped_column(
-        ForeignKey("issues.id", ondelete="CASCADE"), unique=True, nullable=False, index=True
-    )
-    needs_repro: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    is_breaking: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    suggested_tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
-    ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    drafted_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    issue: Mapped["Issue"] = relationship("Issue", back_populates="triage_report")
-
-
 def init_db() -> None:
-    """Create all database tables."""
+    """Create all database tables and ensure new Stellar bounty columns exist."""
     Base.metadata.create_all(bind=engine)
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        if inspector.has_table("issues"):
+            issue_cols = {col["name"] for col in inspector.get_columns("issues")}
+            if "bounty_xlm" not in issue_cols:
+                conn.execute(text("ALTER TABLE issues ADD COLUMN bounty_xlm FLOAT NOT NULL DEFAULT 25.0"))
+            if "contributor_stellar_address" not in issue_cols:
+                conn.execute(text("ALTER TABLE issues ADD COLUMN contributor_stellar_address VARCHAR(64)"))
+            if "bounty_status" not in issue_cols:
+                conn.execute(
+                    text("ALTER TABLE issues ADD COLUMN bounty_status VARCHAR(32) NOT NULL DEFAULT 'unfunded'")
+                )
+            if "stellar_tx_hash" not in issue_cols:
+                conn.execute(text("ALTER TABLE issues ADD COLUMN stellar_tx_hash VARCHAR(128)"))
+
+        if inspector.has_table("triage_reports"):
+            report_cols = {col["name"] for col in inspector.get_columns("triage_reports")}
+            if "complexity" not in report_cols:
+                conn.execute(
+                    text("ALTER TABLE triage_reports ADD COLUMN complexity VARCHAR(32) NOT NULL DEFAULT 'Medium'")
+                )
+            if "bounty_xlm" not in report_cols:
+                conn.execute(
+                    text("ALTER TABLE triage_reports ADD COLUMN bounty_xlm FLOAT NOT NULL DEFAULT 75.0")
+                )
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -117,3 +64,17 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+__all__ = [
+    "Base",
+    "Issue",
+    "Repository",
+    "SessionLocal",
+    "TriageReport",
+    "calculate_bounty_xlm",
+    "engine",
+    "get_db",
+    "init_db",
+    "utc_now",
+]

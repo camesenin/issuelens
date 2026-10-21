@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from database import Issue, TriageReport
+from models import COMPLEXITY_BOUNTY_XLM, calculate_bounty_xlm
 
 load_dotenv()
 
@@ -64,6 +65,14 @@ class TriageAnalysisSchema(BaseModel):
             "or error logs, politely request them. If a PR is missing unit tests or introduces breaking "
             "changes, mention those politely."
         )
+    )
+    complexity: Literal["Low", "Medium", "High"] = Field(
+        default="Medium",
+        description="Estimated engineering complexity of the issue or PR ('Low', 'Medium', 'High').",
+    )
+    bounty_xlm: float = Field(
+        default=75.0,
+        description="Auto-calculated Stellar XLM bounty (Low=25.0, Medium=75.0, High=150.0).",
     )
 
 
@@ -252,6 +261,15 @@ def _fallback_analyze(issue: Issue) -> TriageAnalysisSchema:
                 "The diff includes test coverage and appears backward-compatible. A maintainer will complete a final review shortly."
             )
 
+        complexity, bounty_xlm = calculate_bounty_xlm(
+            is_breaking=is_breaking,
+            needs_repro=not has_tests,
+            suggested_tags=tags,
+            title=title,
+            body=body,
+            diff=diff_text,
+        )
+
         return TriageAnalysisSchema(
             needs_repro=not has_tests,
             is_breaking=is_breaking,
@@ -259,6 +277,8 @@ def _fallback_analyze(issue: Issue) -> TriageAnalysisSchema:
             suggested_tags=tags,
             ai_summary=ai_summary,
             drafted_reply=" ".join(reply_parts),
+            complexity=complexity,
+            bounty_xlm=bounty_xlm,
         )
 
     # Issue analysis
@@ -297,6 +317,14 @@ def _fallback_analyze(issue: Issue) -> TriageAnalysisSchema:
             "have queued this issue for maintainer review."
         )
 
+    complexity, bounty_xlm = calculate_bounty_xlm(
+        is_breaking=False,
+        needs_repro=needs_repro,
+        suggested_tags=tags,
+        title=title,
+        body=body,
+    )
+
     return TriageAnalysisSchema(
         needs_repro=needs_repro,
         is_breaking=False,
@@ -304,6 +332,8 @@ def _fallback_analyze(issue: Issue) -> TriageAnalysisSchema:
         suggested_tags=tags,
         ai_summary=ai_summary,
         drafted_reply=drafted_reply,
+        complexity=complexity,
+        bounty_xlm=bounty_xlm,
     )
 
 
@@ -349,6 +379,17 @@ def analyze_issue_or_pr_with_gemini(issue: Issue) -> TriageAnalysisSchema:
                 filtered = ["bug", "repro-needed"] if result.needs_repro else ["enhancement"]
             result.suggested_tags = filtered
 
+        complexity, bounty_xlm = calculate_bounty_xlm(
+            result.complexity,
+            is_breaking=result.is_breaking,
+            needs_repro=result.needs_repro,
+            suggested_tags=result.suggested_tags,
+            title=issue.title or "",
+            body=issue.body or "",
+            diff=diff_text,
+        )
+        result.complexity = complexity
+        result.bounty_xlm = bounty_xlm
         return result
     except Exception:
         return _fallback_analyze(issue)
@@ -357,6 +398,19 @@ def analyze_issue_or_pr_with_gemini(issue: Issue) -> TriageAnalysisSchema:
 def run_triage_for_issue(db: Session, issue: Issue) -> TriageReport:
     """Analyze an Issue or PR via Gemini and create or update its TriageReport in SQLite."""
     analysis = analyze_issue_or_pr_with_gemini(issue)
+    complexity, bounty_xlm = calculate_bounty_xlm(
+        analysis.complexity,
+        is_breaking=analysis.is_breaking,
+        needs_repro=analysis.needs_repro,
+        suggested_tags=analysis.suggested_tags,
+        title=issue.title or "",
+        body=issue.body or "",
+        diff=issue.diff,
+    )
+
+    issue.bounty_xlm = bounty_xlm
+    if issue.bounty_status not in ("escrowed", "paid"):
+        issue.bounty_status = "escrowed"
 
     report = db.scalar(select(TriageReport).where(TriageReport.issue_id == issue.id))
     if report is None:
@@ -367,6 +421,8 @@ def run_triage_for_issue(db: Session, issue: Issue) -> TriageReport:
             suggested_tags=analysis.suggested_tags,
             ai_summary=analysis.ai_summary,
             drafted_reply=analysis.drafted_reply,
+            complexity=complexity,
+            bounty_xlm=bounty_xlm,
         )
         db.add(report)
     else:
@@ -375,6 +431,8 @@ def run_triage_for_issue(db: Session, issue: Issue) -> TriageReport:
         report.suggested_tags = analysis.suggested_tags
         report.ai_summary = analysis.ai_summary
         report.drafted_reply = analysis.drafted_reply
+        report.complexity = complexity
+        report.bounty_xlm = bounty_xlm
 
     db.commit()
     db.refresh(report)

@@ -7,14 +7,23 @@ from sqlalchemy.orm import Session, selectinload
 
 from database import Issue, Repository, SessionLocal, TriageReport, get_db, init_db
 from github_service import post_issue_comment, sync_repository_issues
-from schemas import (
+from models import (
+    BountyPayoutRequest,
+    BountyPayoutResponse,
     IssueRead,
     IssueReplyRequest,
     IssueReplyResponse,
     RepoSyncRequest,
     RepoSyncResponse,
     RepositoryRead,
+    StellarNetworkStatusResponse,
     TriageReportRead,
+    calculate_bounty_xlm,
+)
+from stellar_service import (
+    DEMO_ESCROW_PUBLIC_KEY,
+    check_testnet_network_status,
+    submit_bounty_payout,
 )
 from triage_service import run_triage_for_issue
 
@@ -43,6 +52,10 @@ def _seed_demo_data_if_empty() -> None:
             author="dan-dev",
             is_pr=False,
             state="open",
+            bounty_xlm=75.0,
+            contributor_stellar_address="GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+            bounty_status="escrowed",
+            stellar_tx_hash=None,
         )
         issue2 = Issue(
             repo_id=repo.id,
@@ -74,6 +87,10 @@ def _seed_demo_data_if_empty() -> None:
                 "-export function unstable_scheduleCallback(priorityLevel, callback, options) {\n"
                 "+export function unstable_scheduleCallback(priorityLevel, callback) {\n"
             ),
+            bounty_xlm=150.0,
+            contributor_stellar_address="GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+            bounty_status="escrowed",
+            stellar_tx_hash=None,
         )
         issue3 = Issue(
             repo_id=repo.id,
@@ -103,6 +120,10 @@ def _seed_demo_data_if_empty() -> None:
                 "diff --git a/packages/react-devtools-shared/src/__tests__/ServerComponent.test.tsx b/packages/react-devtools-shared/src/__tests__/ServerComponent.test.tsx\n"
                 "+++ b/packages/react-devtools-shared/src/__tests__/ServerComponent.test.tsx\n"
             ),
+            bounty_xlm=25.0,
+            contributor_stellar_address="GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+            bounty_status="escrowed",
+            stellar_tx_hash=None,
         )
 
         db.add_all([issue1, issue2, issue3])
@@ -127,6 +148,8 @@ def _seed_demo_data_if_empty() -> None:
                         "3. Any hydration warnings or console logs\n\n"
                         "Once we have a minimal repro, we'll gladly investigate!"
                     ),
+                    complexity="Medium",
+                    bounty_xlm=75.0,
                 ),
                 TriageReport(
                     issue_id=issue2.id,
@@ -144,6 +167,8 @@ def _seed_demo_data_if_empty() -> None:
                         "2. **Missing Unit Tests**: No test files (`*.test.js` / `*.test.tsx`) were modified in this diff. "
                         "Could you add regression tests covering delayed scheduling?"
                     ),
+                    complexity="High",
+                    bounty_xlm=150.0,
                 ),
                 TriageReport(
                     issue_id=issue3.id,
@@ -158,6 +183,8 @@ def _seed_demo_data_if_empty() -> None:
                         "Thanks @devtools-maintainer! The implementation looks clean, backward-compatible, and includes "
                         "`ServerComponent.test.tsx` coverage. Queued for maintainer sign-off."
                     ),
+                    complexity="Low",
+                    bounty_xlm=25.0,
                 ),
             ]
         )
@@ -173,8 +200,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="IssueLens API",
-    description="AI-Powered Issue & PR Triage Dashboard for Open-Source Maintainers",
-    version="0.1.0",
+    description="AI-Powered Issue & PR Triage Dashboard with Stellar XLM Bounties & Drips Ecosystem Integration",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -190,6 +217,12 @@ app.add_middleware(
 @app.get("/api/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok", "service": "issuelens-backend"}
+
+
+@app.get("/api/stellar/network-status", response_model=StellarNetworkStatusResponse)
+async def stellar_network_status_endpoint() -> StellarNetworkStatusResponse:
+    status_info = await check_testnet_network_status()
+    return StellarNetworkStatusResponse(**status_info)
 
 
 @app.post("/api/repos/sync", response_model=RepoSyncResponse)
@@ -276,6 +309,80 @@ def triage_issue_endpoint(
 
     report = run_triage_for_issue(db=db, issue=issue)
     return report
+
+
+@app.post("/api/issues/{issue_id}/bounty/payout", response_model=BountyPayoutResponse)
+def payout_issue_bounty_endpoint(
+    issue_id: int,
+    payload: BountyPayoutRequest | None = Body(default=None),
+    db: Session = Depends(get_db),
+) -> BountyPayoutResponse:
+    issue = db.scalar(
+        select(Issue)
+        .options(selectinload(Issue.triage_report), selectinload(Issue.repository))
+        .where(Issue.id == issue_id)
+    )
+    if issue is None:
+        raise HTTPException(status_code=404, detail=f"Issue {issue_id} not found")
+
+    destination = (
+        (payload.contributor_stellar_address if payload and payload.contributor_stellar_address else None)
+        or issue.contributor_stellar_address
+        or DEMO_ESCROW_PUBLIC_KEY
+    )
+
+    if payload and payload.bounty_xlm is not None:
+        amount_xlm = float(payload.bounty_xlm)
+    elif issue.bounty_xlm and issue.bounty_xlm > 0:
+        amount_xlm = float(issue.bounty_xlm)
+    else:
+        _, amount_xlm = calculate_bounty_xlm(
+            issue.triage_report.complexity if issue.triage_report else None,
+            is_breaking=bool(issue.triage_report.is_breaking) if issue.triage_report else False,
+            needs_repro=bool(issue.triage_report.needs_repro) if issue.triage_report else False,
+            suggested_tags=issue.triage_report.suggested_tags if issue.triage_report else None,
+            title=issue.title or "",
+            body=issue.body or "",
+            diff=issue.diff,
+        )
+
+    try:
+        payout_result = submit_bounty_payout(
+            contributor_stellar_address=destination,
+            amount_xlm=amount_xlm,
+            issue_number=issue.github_issue_id,
+            escrow_secret=payload.escrow_secret if payload else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    issue.contributor_stellar_address = payout_result["destination"]
+    issue.bounty_xlm = payout_result["amount_xlm"]
+    issue.bounty_status = "paid"
+    issue.stellar_tx_hash = payout_result["tx_hash"]
+    if issue.triage_report is not None:
+        issue.triage_report.bounty_xlm = payout_result["amount_xlm"]
+
+    db.commit()
+    db.refresh(issue)
+
+    return BountyPayoutResponse(
+        issue_id=issue.id,
+        github_issue_id=issue.github_issue_id,
+        bounty_xlm=issue.bounty_xlm,
+        contributor_stellar_address=issue.contributor_stellar_address,
+        bounty_status="paid",
+        stellar_tx_hash=payout_result["tx_hash"],
+        tx_hash=payout_result["tx_hash"],
+        explorer_url=payout_result["explorer_url"],
+        horizon_tx_url=payout_result["horizon_tx_url"],
+        memo=payout_result["memo"],
+        network=payout_result["network"],
+        simulated=payout_result["simulated"],
+        mode=payout_result["mode"],
+    )
 
 
 @app.post("/api/issues/{id}/reply", response_model=IssueReplyResponse)
