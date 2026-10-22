@@ -5,7 +5,7 @@
 @layer base {
   html,
   body {
-    background-color: #09090b;
+    background-color: #090A0F;
     color: #f4f4f5;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     -webkit-font-smoothing: antialiased;
@@ -13,7 +13,7 @@
 
   * {
     scrollbar-width: thin;
-    scrollbar-color: #27272a #09090b;
+    scrollbar-color: #27272a #090A0F;
   }
 
   *::-webkit-scrollbar {
@@ -22,7 +22,7 @@
   }
 
   *::-webkit-scrollbar-track {
-    background: #09090b;
+    background: #090A0F;
   }
 
   *::-webkit-scrollbar-thumb {
